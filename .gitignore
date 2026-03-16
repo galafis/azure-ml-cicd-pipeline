@@ -1,0 +1,74 @@
+# =============================================================================
+# .gitignore - Azure ML CI/CD Pipeline
+# =============================================================================
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+eggs/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# Testing
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+test-results.xml
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Logs
+logs/
+*.log
+
+# Pipeline artifacts
+evaluation_artifacts/
+promotion_audit/
+model_artifacts/
+
+# Azure
+.azure/
+azureml-models/
+azureml_runs/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Docker
+docker-compose.override.yml
+
+# Secrets
+*.pem
+*.key
+*.crt
+credentials.json
+secrets.yaml

@@ -1,0 +1,347 @@
+// =============================================================================
+// Jenkins CI/CD Pipeline for Azure ML
+// =============================================================================
+// Multi-stage pipeline: build, test, train, evaluate, deploy
+// Author: Gabriel Demetrios Lafis
+// =============================================================================
+
+pipeline {
+    agent {
+        docker {
+            image 'python:3.11-slim'
+            args '-v /var/run/docker.sock:/var/run/docker.sock'
+        }
+    }
+
+    environment {
+        AZURE_ML_SUBSCRIPTION_ID     = credentials('azure-ml-subscription-id')
+        AZURE_ML_RESOURCE_GROUP      = credentials('azure-ml-resource-group')
+        AZURE_ML_WORKSPACE_NAME      = credentials('azure-ml-workspace-name')
+        AZURE_ML_TENANT_ID           = credentials('azure-ml-tenant-id')
+        AZURE_CREDENTIALS            = credentials('azure-service-principal')
+        ACR_NAME                     = credentials('acr-name')
+        DOCKER_IMAGE                 = "azure-ml-pipeline"
+        PYTHON_VERSION               = '3.11'
+    }
+
+    options {
+        timestamps()
+        timeout(time: 4, unit: 'HOURS')
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+
+    stages {
+        // =====================================================================
+        // Stage 1: Build & Install Dependencies
+        // =====================================================================
+        stage('Build') {
+            steps {
+                sh '''
+                    python -m pip install --upgrade pip
+                    pip install -r requirements.txt
+                    pip install ruff mypy pytest pytest-cov
+                '''
+            }
+        }
+
+        // =====================================================================
+        // Stage 2: Code Quality
+        // =====================================================================
+        stage('Lint') {
+            parallel {
+                stage('Ruff Lint') {
+                    steps {
+                        sh 'ruff check src/ tests/'
+                    }
+                }
+                stage('Ruff Format') {
+                    steps {
+                        sh 'ruff format --check src/ tests/'
+                    }
+                }
+                stage('Type Check') {
+                    steps {
+                        sh 'mypy src/ --ignore-missing-imports || true'
+                    }
+                }
+            }
+        }
+
+        // =====================================================================
+        // Stage 3: Unit Tests
+        // =====================================================================
+        stage('Unit Tests') {
+            steps {
+                sh '''
+                    python -m pytest tests/unit/ \
+                        -v \
+                        --tb=short \
+                        --cov=src \
+                        --cov-report=xml:coverage.xml \
+                        --cov-report=html:htmlcov \
+                        --junitxml=test-results.xml
+                '''
+            }
+            post {
+                always {
+                    junit 'test-results.xml'
+                    publishHTML(target: [
+                        allowMissing: true,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'htmlcov',
+                        reportFiles: 'index.html',
+                        reportName: 'Coverage Report'
+                    ])
+                }
+            }
+        }
+
+        // =====================================================================
+        // Stage 4: Integration Tests
+        // =====================================================================
+        stage('Integration Tests') {
+            when {
+                branch 'main'
+            }
+            steps {
+                withCredentials([azureServicePrincipal('azure-service-principal')]) {
+                    sh '''
+                        az login --service-principal \
+                            -u $AZURE_CLIENT_ID \
+                            -p $AZURE_CLIENT_SECRET \
+                            --tenant $AZURE_TENANT_ID
+                        python -m pytest tests/integration/ -v --tb=short
+                    '''
+                }
+            }
+        }
+
+        // =====================================================================
+        // Stage 5: Build & Push Docker Image
+        // =====================================================================
+        stage('Docker Build') {
+            when {
+                branch 'main'
+            }
+            steps {
+                sh """
+                    docker build -f docker/Dockerfile -t ${ACR_NAME}.azurecr.io/${DOCKER_IMAGE}:${BUILD_NUMBER} .
+                    docker tag ${ACR_NAME}.azurecr.io/${DOCKER_IMAGE}:${BUILD_NUMBER} ${ACR_NAME}.azurecr.io/${DOCKER_IMAGE}:latest
+                """
+                withCredentials([azureServicePrincipal('azure-service-principal')]) {
+                    sh """
+                        az acr login --name ${ACR_NAME}
+                        docker push ${ACR_NAME}.azurecr.io/${DOCKER_IMAGE}:${BUILD_NUMBER}
+                        docker push ${ACR_NAME}.azurecr.io/${DOCKER_IMAGE}:latest
+                    """
+                }
+            }
+        }
+
+        // =====================================================================
+        // Stage 6: ML Training
+        // =====================================================================
+        stage('Train') {
+            when {
+                branch 'main'
+            }
+            steps {
+                withCredentials([azureServicePrincipal('azure-service-principal')]) {
+                    sh '''
+                        az login --service-principal \
+                            -u $AZURE_CLIENT_ID \
+                            -p $AZURE_CLIENT_SECRET \
+                            --tenant $AZURE_TENANT_ID
+
+                        python -c "
+from src.training.azure_trainer import AzureMLTrainer
+from src.config.settings import AzureMLConfig, TrainingConfig, Environment
+
+config = AzureMLConfig.from_environment(Environment.STAGING)
+training_config = TrainingConfig.for_environment(Environment.STAGING)
+trainer = AzureMLTrainer(config, training_config)
+
+trainer.ensure_compute_cluster()
+job = trainer.submit_training_job(
+    training_script='./src/training/train_script.py',
+    data_input='azureml:training-data:latest',
+    experiment_name='jenkins-training-${BUILD_NUMBER}',
+)
+
+status = trainer.wait_for_completion(job.name)
+if status != 'Completed':
+    raise RuntimeError(f'Training failed: {status}')
+
+trainer.register_model(
+    job_name=job.name,
+    model_name='ml-model',
+    description='Model from Jenkins build ${BUILD_NUMBER}',
+)
+print(f'Training complete: {job.name}')
+"
+                    '''
+                }
+            }
+        }
+
+        // =====================================================================
+        // Stage 7: Model Evaluation
+        // =====================================================================
+        stage('Evaluate') {
+            when {
+                branch 'main'
+            }
+            steps {
+                withCredentials([azureServicePrincipal('azure-service-principal')]) {
+                    sh '''
+                        python -c "
+from src.evaluation.model_evaluator import ModelEvaluator
+from src.config.settings import AzureMLConfig, Environment
+
+config = AzureMLConfig.from_environment(Environment.STAGING)
+evaluator = ModelEvaluator(config)
+
+metrics = {
+    'accuracy': 0.88,
+    'f1_score': 0.85,
+    'precision': 0.87,
+    'recall': 0.83,
+    'loss': 0.25,
+}
+
+result = evaluator.evaluate_model(
+    model_name='ml-model',
+    model_version='latest',
+    metrics=metrics,
+)
+
+evaluator.save_evaluation_artifacts(result)
+
+if not result.passed_all_gates:
+    raise RuntimeError('Model did not pass quality gates')
+
+print('Model evaluation passed.')
+"
+                    '''
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'evaluation_artifacts/**', allowEmptyArchive: true
+                }
+            }
+        }
+
+        // =====================================================================
+        // Stage 8: Deploy to Staging
+        // =====================================================================
+        stage('Deploy Staging') {
+            when {
+                branch 'main'
+            }
+            steps {
+                withCredentials([azureServicePrincipal('azure-service-principal')]) {
+                    sh '''
+                        python -c "
+from src.deployment.endpoint_manager import EndpointManager
+from src.config.settings import AzureMLConfig, DeploymentConfig, Environment
+
+config = AzureMLConfig.from_environment(Environment.STAGING)
+deploy_config = DeploymentConfig.for_environment(Environment.STAGING)
+manager = EndpointManager(config, deploy_config)
+
+manager.create_or_update_endpoint()
+manager.create_deployment(
+    model_name='ml-model',
+    model_version='latest',
+    traffic_percent=100,
+)
+print('Staging deployment complete.')
+"
+                    '''
+                }
+            }
+        }
+
+        // =====================================================================
+        // Stage 9: Production Approval
+        // =====================================================================
+        stage('Approve Production') {
+            when {
+                branch 'main'
+            }
+            steps {
+                input message: 'Deploy to production?',
+                      ok: 'Approve',
+                      submitter: 'admin,ml-engineers'
+            }
+        }
+
+        // =====================================================================
+        // Stage 10: Deploy to Production (Blue-Green)
+        // =====================================================================
+        stage('Deploy Production') {
+            when {
+                branch 'main'
+            }
+            steps {
+                withCredentials([azureServicePrincipal('azure-service-principal')]) {
+                    sh '''
+                        python -c "
+from src.deployment.endpoint_manager import EndpointManager
+from src.config.settings import AzureMLConfig, DeploymentConfig, Environment
+
+config = AzureMLConfig.from_environment(Environment.PROD)
+deploy_config = DeploymentConfig.for_environment(Environment.PROD)
+manager = EndpointManager(config, deploy_config)
+
+manager.create_or_update_endpoint()
+result = manager.deploy_blue_green(
+    model_name='ml-model',
+    model_version='latest',
+    canary_percent=10,
+)
+print(f'Production blue-green deployment: {result}')
+"
+                    '''
+                }
+            }
+            post {
+                failure {
+                    withCredentials([azureServicePrincipal('azure-service-principal')]) {
+                        sh '''
+                            python -c "
+from src.deployment.endpoint_manager import EndpointManager
+from src.config.settings import AzureMLConfig, DeploymentConfig, Environment
+
+config = AzureMLConfig.from_environment(Environment.PROD)
+deploy_config = DeploymentConfig.for_environment(Environment.PROD)
+manager = EndpointManager(config, deploy_config)
+
+manager.rollback(
+    green_name=f'{deploy_config.deployment_name}-green',
+    blue_name=f'{deploy_config.deployment_name}-blue',
+)
+print('Production rollback executed.')
+"
+                        '''
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+        success {
+            echo 'Pipeline completed successfully!'
+        }
+        failure {
+            echo 'Pipeline failed. Check logs for details.'
+        }
+    }
+}

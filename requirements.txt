@@ -1,0 +1,37 @@
+# =============================================================================
+# Python Dependencies - Azure ML CI/CD Pipeline
+# =============================================================================
+# Author: Gabriel Demetrios Lafis
+# =============================================================================
+
+# Azure ML SDK v2
+azure-ai-ml>=1.12.0,<2.0.0
+azure-identity>=1.15.0,<2.0.0
+
+# Azure Key Vault
+azure-keyvault-secrets>=4.7.0,<5.0.0
+
+# Azure Monitoring
+opencensus-ext-azure>=1.1.13,<2.0.0
+azure-monitor-opentelemetry>=1.2.0,<2.0.0
+
+# Data Processing
+pandas>=2.1.0,<3.0.0
+numpy>=1.26.0,<2.0.0
+scikit-learn>=1.3.0,<2.0.0
+
+# Configuration
+pyyaml>=6.0.1,<7.0.0
+python-dotenv>=1.0.0,<2.0.0
+
+# Utilities
+requests>=2.31.0,<3.0.0
+
+# =============================================================================
+# Development Dependencies
+# =============================================================================
+# ruff>=0.2.0
+# mypy>=1.8.0
+# pytest>=8.0.0
+# pytest-cov>=4.1.0
+# pytest-asyncio>=0.23.0

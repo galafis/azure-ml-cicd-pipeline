@@ -1,0 +1,87 @@
+# =============================================================================
+# Docker Compose - Azure ML CI/CD Pipeline
+# =============================================================================
+# Local development and testing environment.
+# Author: Gabriel Demetrios Lafis
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # ML Pipeline Application
+  # ===========================================================================
+  pipeline:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: azure-ml-pipeline
+    environment:
+      - AZURE_ML_SUBSCRIPTION_ID=${AZURE_ML_SUBSCRIPTION_ID:-}
+      - AZURE_ML_RESOURCE_GROUP=${AZURE_ML_RESOURCE_GROUP:-}
+      - AZURE_ML_WORKSPACE_NAME=${AZURE_ML_WORKSPACE_NAME:-}
+      - AZURE_ML_TENANT_ID=${AZURE_ML_TENANT_ID:-}
+      - AZURE_ML_REGION=${AZURE_ML_REGION:-eastus2}
+      - PIPELINE_ENVIRONMENT=${PIPELINE_ENVIRONMENT:-dev}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ../src:/app/src:ro
+      - ../config:/app/config:ro
+      - pipeline-logs:/app/logs
+      - pipeline-artifacts:/app/evaluation_artifacts
+    networks:
+      - ml-network
+    restart: unless-stopped
+
+  # ===========================================================================
+  # Test Runner
+  # ===========================================================================
+  test-runner:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: azure-ml-test-runner
+    command: >
+      python -m pytest tests/ -v --tb=short
+        --cov=src --cov-report=html:/app/coverage
+    environment:
+      - AZURE_ML_SUBSCRIPTION_ID=00000000-0000-0000-0000-000000000000
+      - AZURE_ML_RESOURCE_GROUP=rg-ml-test
+      - AZURE_ML_WORKSPACE_NAME=mlw-test
+      - AZURE_ML_TENANT_ID=00000000-0000-0000-0000-000000000001
+    volumes:
+      - ../src:/app/src:ro
+      - ../tests:/app/tests:ro
+      - test-coverage:/app/coverage
+    networks:
+      - ml-network
+    profiles:
+      - test
+
+  # ===========================================================================
+  # Lint Runner
+  # ===========================================================================
+  lint-runner:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: azure-ml-lint-runner
+    command: >
+      sh -c "ruff check src/ tests/ && ruff format --check src/ tests/"
+    volumes:
+      - ../src:/app/src:ro
+      - ../tests:/app/tests:ro
+    networks:
+      - ml-network
+    profiles:
+      - lint
+
+volumes:
+  pipeline-logs:
+    driver: local
+  pipeline-artifacts:
+    driver: local
+  test-coverage:
+    driver: local
+
+networks:
+  ml-network:
+    driver: bridge

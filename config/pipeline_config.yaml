@@ -1,0 +1,178 @@
+# =============================================================================
+# Pipeline Configuration
+# =============================================================================
+# Centralized configuration for Azure ML CI/CD Pipeline
+# Author: Gabriel Demetrios Lafis
+# =============================================================================
+
+project:
+  name: "azure-ml-cicd-pipeline"
+  version: "1.0.0"
+  description: "Production CI/CD pipeline for ML models on Azure"
+
+# =============================================================================
+# Environment Configurations
+# =============================================================================
+environments:
+  dev:
+    azure:
+      region: "eastus2"
+      resource_group_prefix: "rg-ml-dev"
+    compute:
+      vm_size: "Standard_DS2_v2"
+      min_nodes: 0
+      max_nodes: 2
+      priority: "LowPriority"
+    training:
+      max_epochs: 10
+      batch_size: 32
+      learning_rate: 0.001
+      early_stopping_patience: 5
+    deployment:
+      instance_type: "Standard_DS1_v2"
+      instance_count: 1
+      blue_green: false
+    quality_gates:
+      accuracy:
+        threshold: 0.70
+        comparison: "gte"
+        mandatory: true
+      loss:
+        threshold: 1.0
+        comparison: "lte"
+        mandatory: false
+
+  staging:
+    azure:
+      region: "eastus2"
+      resource_group_prefix: "rg-ml-staging"
+    compute:
+      vm_size: "Standard_DS3_v2"
+      min_nodes: 0
+      max_nodes: 4
+      priority: "Dedicated"
+    training:
+      max_epochs: 50
+      batch_size: 32
+      learning_rate: 0.001
+      early_stopping_patience: 10
+    deployment:
+      instance_type: "Standard_DS2_v2"
+      instance_count: 2
+      blue_green: true
+    quality_gates:
+      accuracy:
+        threshold: 0.80
+        comparison: "gte"
+        mandatory: true
+      f1_score:
+        threshold: 0.75
+        comparison: "gte"
+        mandatory: true
+      loss:
+        threshold: 0.5
+        comparison: "lte"
+        mandatory: true
+
+  prod:
+    azure:
+      region: "eastus2"
+      resource_group_prefix: "rg-ml-prod"
+    compute:
+      vm_size: "Standard_NC6s_v3"
+      min_nodes: 0
+      max_nodes: 8
+      priority: "Dedicated"
+    training:
+      max_epochs: 100
+      batch_size: 64
+      learning_rate: 0.001
+      early_stopping_patience: 15
+      hyperdrive:
+        enabled: true
+        max_total_runs: 20
+        max_concurrent_runs: 4
+        primary_metric: "accuracy"
+        goal: "maximize"
+    deployment:
+      instance_type: "Standard_DS3_v2"
+      instance_count: 3
+      max_instances: 10
+      blue_green: true
+      canary_percent: 10
+      rollback_on_failure: true
+    quality_gates:
+      accuracy:
+        threshold: 0.85
+        comparison: "gte"
+        mandatory: true
+      f1_score:
+        threshold: 0.80
+        comparison: "gte"
+        mandatory: true
+      precision:
+        threshold: 0.80
+        comparison: "gte"
+        mandatory: true
+      recall:
+        threshold: 0.75
+        comparison: "gte"
+        mandatory: true
+      loss:
+        threshold: 0.3
+        comparison: "lte"
+        mandatory: true
+
+# =============================================================================
+# Promotion Rules
+# =============================================================================
+promotion:
+  dev_to_staging:
+    gates:
+      - type: "evaluation"
+        name: "quality_gates"
+        required: true
+      - type: "smoke_test"
+        name: "smoke_test"
+        required: true
+
+  staging_to_prod:
+    gates:
+      - type: "evaluation"
+        name: "quality_gates"
+        required: true
+      - type: "evaluation"
+        name: "champion_comparison"
+        required: true
+      - type: "integration_test"
+        name: "integration_tests"
+        required: true
+      - type: "approval"
+        name: "manual_approval"
+        required: true
+
+# =============================================================================
+# Monitoring
+# =============================================================================
+monitoring:
+  alerts:
+    model_drift_threshold: 0.10
+    latency_p99_threshold_ms: 5000
+    error_rate_threshold: 0.01
+  retention:
+    dev: 30
+    staging: 60
+    prod: 90
+
+# =============================================================================
+# Security
+# =============================================================================
+security:
+  network:
+    enable_private_endpoints: true
+    enable_vnet_integration: true
+  key_vault:
+    secret_rotation_days: 90
+    enable_purge_protection: true
+  rbac:
+    enable_rbac_authorization: true
